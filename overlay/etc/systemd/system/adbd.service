@@ -1,0 +1,14 @@
+[Unit]
+Description=Android Debug Bridge Daemon (USB OTG)
+After=local-fs.target
+Wants=local-fs.target
+
+[Service]
+Type=simple
+ExecStartPre=/usr/local/bin/k2-setup-adb.sh
+ExecStart=/usr/local/bin/adbd -D
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,195 @@
+#!/bin/sh
+# Early init and OverlayFS manager for Creality K2 Pro
+export PATH=/sbin:/usr/sbin:/bin:/usr/bin
+
+# 1. Mount essential virtual filesystems
+mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sysfs /sys 2>/dev/null || true
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+mkdir -p /dev/pts /dev/shm /run /tmp /data /overlay_tmpfs /new_root /rom 2>/dev/null || true
+mount -t devpts devpts /dev/pts 2>/dev/null || true
+mount -t tmpfs tmpfs /run 2>/dev/null || true
+mount -t tmpfs tmpfs /tmp 2>/dev/null || true
+
+# Load kernel modules early
+modprobe overlay 2>/dev/null || true
+modprobe gpio_backlight 2>/dev/null || true
+
+# 2. Locate Persistent Data Partition
+DATA_DEV=""
+for cand in /dev/mmcblk0p14 /dev/by-name/UDISK /dev/by-name/data; do
+    if [ -b "$cand" ]; then
+        DATA_DEV="$cand"
+        break
+    fi
+done
+
+if [ -n "$DATA_DEV" ]; then
+    # Auto-format /data partition if unformatted on first boot
+    if ! blkid "$DATA_DEV" 2>/dev/null | grep -q 'TYPE="ext4"'; then
+        echo "Formatting persistent /data partition ($DATA_DEV)..."
+        mkfs.ext4 -F -L data "$DATA_DEV" 2>/dev/null || mke2fs -F -t ext4 -L data "$DATA_DEV" 2>/dev/null || true
+    fi
+    mkdir -p /data
+    mount -t ext4 -o noatime,data=ordered,errors=continue "$DATA_DEV" /data 2>/dev/null || true
+fi
+
+# 3. Check for Maintenance Mode (Direct Read-Write on rootfs)
+MAINTENANCE=0
+CMDLINE=$(cat /proc/cmdline 2>/dev/null)
+case "$CMDLINE" in
+    *maintenance*|*nooverlay*|*overlay=no*|*overlay=rw*)
+        MAINTENANCE=1
+        ;;
+esac
+
+if [ -f /data/.maintenance_mode ]; then
+    MAINTENANCE=1
+fi
+
+# First boot / First run detection:
+# If .not_logged_in_yet exists, boot direct RW so root password and user account persist to disk
+if [ -f /root/.not_logged_in_yet ] || [ ! -f /data/.data_initialized ]; then
+    echo ""
+    echo "======================================================="
+    echo " [K2 Pro] FIRST RUN SETUP DETECTED (Direct RW Mode)    "
+    echo " Root password and user configuration will be saved    "
+    echo " permanently to disk. System locks into Immutable      "
+    echo " mode automatically on next reboot.                   "
+    echo "======================================================="
+    echo ""
+    MAINTENANCE=1
+fi
+
+# 4. Bring up Ethernet hardware (PE11 reset, clock, and bind)
+if [ -d /sys/bus/platform/drivers/dwmac-sun8i ]; then
+    devmem 0x02001970 32 0xc0000000 2>/dev/null || busybox devmem 0x02001970 32 0xc0000000 2>/dev/null || true
+    if [ -d /sys/class/gpio ] && [ ! -d /sys/class/gpio/gpio139 ]; then
+        echo 139 > /sys/class/gpio/export 2>/dev/null || true
+    fi
+    if [ -d /sys/class/gpio/gpio139 ]; then
+        echo out > /sys/class/gpio/gpio139/direction 2>/dev/null || true
+        echo 1 > /sys/class/gpio/gpio139/value 2>/dev/null || true
+        echo 139 > /sys/class/gpio/unexport 2>/dev/null || true
+    fi
+    echo 4500000.ethernet > /sys/bus/platform/drivers/dwmac-sun8i/bind 2>/dev/null || true
+fi
+
+# 5. Route Boot Mode
+if [ "$MAINTENANCE" -eq 1 ]; then
+    echo ""
+    echo "======================================================="
+    echo " [K2 Pro] Booting in RW MAINTENANCE Mode (Direct Disk) "
+    echo " Changes to / will be saved permanently to flash.      "
+    echo " Run 'overlay-ctl lock' when finished to re-lock.        "
+    echo "======================================================="
+    echo ""
+    mount -o remount,rw / 2>/dev/null || true
+
+    # Wire up persistent data bind mounts if /data is mounted
+    if [ -n "$DATA_DEV" ]; then
+        mkdir -p /data/home /data/system/NetworkManager /data/system/ssh
+        [ -d /home ] && mount --bind /data/home /home
+        [ -d /etc/NetworkManager/system-connections ] && mount --bind /data/system/NetworkManager /etc/NetworkManager/system-connections
+        if [ -d /data/system/ssh ] && [ -d /etc/ssh ]; then
+            for key in /data/system/ssh/ssh_host_*; do
+                [ -f "$key" ] && cp -u "$key" /etc/ssh/ 2>/dev/null || true
+            done
+        fi
+        touch /data/.data_initialized
+    fi
+
+    # Execute systemd
+    if [ -x /lib/systemd/systemd ]; then
+        exec /lib/systemd/systemd "$@"
+    elif [ -x /sbin/init ]; then
+        exec /sbin/init "$@"
+    fi
+fi
+
+# --- NORMAL BOOT: IMMUTABLE OVERLAYFS MODE ---
+echo ""
+echo "=========================================================="
+echo " [K2 Pro] Booting in IMMUTABLE Mode (Power-outage Safe)   "
+echo " Rootfs (/) is protected. All OS writes stored in RAM.   "
+echo "=========================================================="
+echo ""
+
+# Ensure physical mount points exist before remounting ro
+mkdir -p /overlay_tmpfs /new_root /rom /data 2>/dev/null || true
+
+# Sync initial user accounts and credentials to Slot B if first-run finished on Slot A
+if [ -b /dev/mmcblk0p7 ] && [ ! -f /data/.slotb_synced ] && [ ! -f /root/.not_logged_in_yet ]; then
+    echo "Syncing initial user accounts and credentials to Slot B..."
+    mkdir -p /mnt_slotb
+    if mount /dev/mmcblk0p7 /mnt_slotb 2>/dev/null; then
+        cp -a /etc/passwd /etc/shadow /etc/group /etc/gshadow /mnt_slotb/etc/ 2>/dev/null || true
+        cp -a /etc/timezone /etc/localtime /etc/default/locale /mnt_slotb/etc/ 2>/dev/null || true
+        rm -f /mnt_slotb/root/.not_logged_in_yet 2>/dev/null || true
+        umount /mnt_slotb
+        touch /data/.slotb_synced
+        echo "Slot B credentials synchronized successfully."
+    fi
+    rmdir /mnt_slotb 2>/dev/null || true
+fi
+
+# Ensure physical rootfs is strictly read-only
+mount -o remount,ro / 2>/dev/null || true
+
+# Prepare OverlayFS structure
+mkdir -p /overlay_tmpfs /new_root 2>/dev/null || true
+mount -t tmpfs -o mode=0755 tmpfs /overlay_tmpfs
+mkdir -p /overlay_tmpfs/upper /overlay_tmpfs/work
+
+# Mount the overlay combining read-only root (lowerdir) and RAM tmpfs (upperdir)
+mount -t overlay overlay -o lowerdir=/,upperdir=/overlay_tmpfs/upper,workdir=/overlay_tmpfs/work /new_root
+
+# Prepare mount points in the new root
+mkdir -p /new_root/rom /new_root/proc /new_root/sys /new_root/dev /new_root/run /new_root/data
+
+# Mount persistent /data into new root if available
+if [ -n "$DATA_DEV" ]; then
+    mount -t ext4 -o noatime,data=ordered,errors=continue "$DATA_DEV" /new_root/data 2>/dev/null || true
+
+    # Initialize persistent dirs on first run
+    mkdir -p /new_root/data/home /new_root/data/system/NetworkManager /new_root/data/system/ssh
+    if [ ! -f /new_root/data/.data_initialized ]; then
+        echo "Initializing /data partition on first boot..."
+        [ -d /home ] && cp -a /home/* /new_root/data/home/ 2>/dev/null || true
+        [ -d /etc/NetworkManager/system-connections ] && cp -a /etc/NetworkManager/system-connections/* /new_root/data/system/NetworkManager/ 2>/dev/null || true
+        [ -d /etc/ssh ] && cp -a /etc/ssh/ssh_host_* /new_root/data/system/ssh/ 2>/dev/null || true
+        touch /new_root/data/.data_initialized
+    fi
+
+    # Wire up persistent data bind mounts
+    [ -d /new_root/data/home ] && mount --bind /new_root/data/home /new_root/home
+    [ -d /new_root/data/system/NetworkManager ] && mount --bind /new_root/data/system/NetworkManager /new_root/etc/NetworkManager/system-connections
+    if [ -d /new_root/data/system/ssh ]; then
+        for key in /new_root/data/system/ssh/ssh_host_*; do
+            [ -f "$key" ] && cp -f "$key" /new_root/etc/ssh/ 2>/dev/null || true
+        done
+    fi
+fi
+
+# Move API filesystems into the new root
+mount --move /proc /new_root/proc
+mount --move /sys /new_root/sys
+mount --move /dev /new_root/dev
+mount --move /run /new_root/run
+
+# Pivot root into the immutable overlay
+cd /new_root
+pivot_root . rom
+
+# Unmount the temporary /data mount in old root if still mounted
+umount -l /rom/data 2>/dev/null || true
+
+# Hand over execution to systemd in the new immutable root
+if [ -x /lib/systemd/systemd ]; then
+    exec /lib/systemd/systemd "$@"
+elif [ -x /sbin/init ]; then
+    exec /sbin/init "$@"
+fi
+
+echo "CRITICAL: Unable to execute systemd! Dropping to rescue shell..."
+exec /bin/sh

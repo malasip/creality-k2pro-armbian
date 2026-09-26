@@ -1,0 +1,195 @@
+#!/bin/bash
+# Unified OverlayFS and A/B Slot Manager for Armbian
+set -e
+
+SHOW_HELP() {
+    echo "=========================================================="
+    echo " Armbian Immutable OverlayFS & Dual-Slot Manager          "
+    echo "=========================================================="
+    echo " Usage: overlay-ctl <command>"
+    echo ""
+    echo " Commands:"
+    echo "   status        Check filesystem protection & storage state"
+    echo "   unlock | rw   Switch to direct Read-Write mode (for updates)"
+    echo "   lock | ro     Switch to protected Immutable mode (power-loss safe)"
+    echo "   sync          Clone active rootfs slot to the standby slot"
+    echo "   help          Show this help message"
+    echo "=========================================================="
+}
+
+CHECK_ROOT() {
+    if [ "$(id -u)" -ne 0 ]; then
+        echo "ERROR: This command must be run as root."
+        exit 1
+    fi
+}
+
+GET_ACTIVE_SLOT() {
+    local root_src
+    root_src=$(findmnt -n -o SOURCE /rom 2>/dev/null || findmnt -n -o SOURCE / 2>/dev/null || echo "")
+    if [[ "$root_src" == *"mmcblk0p7"* ]]; then
+        echo "B"
+    elif [[ "$root_src" == *"mmcblk0p6"* ]]; then
+        echo "A"
+    else
+        # Fallback to cmdline check
+        local cmdline
+        cmdline=$(cat /proc/cmdline 2>/dev/null)
+        if [[ "$cmdline" == *"mmcblk0p7"* || "$cmdline" == *"rootfsB"* ]]; then
+            echo "B"
+        else
+            echo "A"
+        fi
+    fi
+}
+
+CMD_STATUS() {
+    echo "=========================================================="
+    echo " System Storage & Protection Status                       "
+    echo "=========================================================="
+    
+    local root_fs
+    root_fs=$(findmnt -n -o FSTYPE / 2>/dev/null || echo "unknown")
+    local active_slot
+    active_slot=$(GET_ACTIVE_SLOT)
+
+    echo " Active Slot:  Slot ${active_slot} (/dev/mmcblk0p$([ "$active_slot" = "A" ] && echo 6 || echo 7))"
+    echo " Standby Slot: Slot $([ "$active_slot" = "A" ] && echo B || echo A) (/dev/mmcblk0p$([ "$active_slot" = "A" ] && echo 7 || echo 6))"
+
+    if [ "$root_fs" = "overlay" ]; then
+        echo " Status:       [ PROTECTED ] Immutable OverlayFS Active"
+        echo " Power Loss:   SAFE (Base system is read-only, writes in RAM)"
+    elif [ -f /data/.maintenance_mode ]; then
+        echo " Status:       [ MAINTENANCE ] Direct Read-Write Mode"
+        echo " Power Loss:   UNSAFE (Writes directly to eMMC flash)"
+        echo " Action:       Run 'overlay-ctl lock' when finished to re-lock."
+    else
+        echo " Status:       [ UNCONFIGURED / DIRECT RW ]"
+    fi
+
+    echo ""
+    echo "Storage Overview:"
+    df -h / /rom /data /home 2>/dev/null || df -h /
+    echo "=========================================================="
+}
+
+CMD_UNLOCK() {
+    CHECK_ROOT
+    if [ ! -b /dev/mmcblk0p14 ] && [ ! -b /dev/by-name/UDISK ]; then
+        echo "ERROR: Persistent /data partition not found."
+        exit 1
+    fi
+
+    mkdir -p /data
+    touch /data/.maintenance_mode
+    sync
+
+    echo ""
+    echo "=========================================================="
+    echo " MAINTENANCE MODE ARMED                                   "
+    echo " The next boot will mount rootfs directly Read-Write.    "
+    echo " Changes (apt install, system updates) will be permanent. "
+    echo " Run 'overlay-ctl lock' when finished to re-lock.        "
+    echo "=========================================================="
+    echo ""
+    read -p "Reboot now into Maintenance Mode? [y/N]: " confirm
+    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        reboot
+    fi
+}
+
+CMD_LOCK() {
+    CHECK_ROOT
+    rm -f /data/.maintenance_mode 2>/dev/null || true
+    sync
+
+    echo ""
+    echo "=========================================================="
+    echo " IMMUTABLE OVERLAYFS MODE ARMED                           "
+    echo " The next boot will mount rootfs strictly read-only.      "
+    echo " System will be protected against power outages.         "
+    echo "=========================================================="
+    echo ""
+    read -p "Reboot now into Immutable Mode? [y/N]: " confirm
+    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        reboot
+    fi
+}
+
+CMD_SYNC() {
+    CHECK_ROOT
+    local active_slot
+    active_slot=$(GET_ACTIVE_SLOT)
+
+    local src_dev dst_dev src_name dst_name
+    if [ "$active_slot" = "A" ]; then
+        src_dev="/dev/mmcblk0p6"
+        dst_dev="/dev/mmcblk0p7"
+        src_name="Slot A"
+        dst_name="Slot B"
+    else
+        src_dev="/dev/mmcblk0p7"
+        dst_dev="/dev/mmcblk0p6"
+        src_name="Slot B"
+        dst_name="Slot A"
+    fi
+
+    echo "=========================================================="
+    echo " Synchronizing Active ${src_name} -> Standby ${dst_name}  "
+    echo " Source: ${src_dev} | Target: ${dst_dev}                  "
+    echo "=========================================================="
+    echo "Caution: This will overwrite ${dst_name} with an exact copy of ${src_name}."
+    read -p "Proceed with slot synchronization? [y/N]: " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "Aborted."
+        exit 0
+    fi
+
+    echo "Cloning filesystem (3.5 GB)..."
+    dd if="${src_dev}" of="${dst_dev}" bs=4M status=progress
+    sync
+    echo ""
+    echo "SUCCESS: ${dst_name} (${dst_dev}) is now an identical backup of ${src_name}."
+}
+
+# Detect invocation via symlink
+INVOKE_NAME=$(basename "$0")
+ACTION="$1"
+
+case "$INVOKE_NAME" in
+    overlay-status|k2-status)
+        ACTION="status"
+        ;;
+    overlay-rw|k2-rw|overlay-unlock)
+        ACTION="unlock"
+        ;;
+    overlay-ro|k2-ro|overlay-lock)
+        ACTION="lock"
+        ;;
+    slot-sync|k2-sync-slots)
+        ACTION="sync"
+        ;;
+esac
+
+case "$ACTION" in
+    status)
+        CMD_STATUS
+        ;;
+    unlock|rw)
+        CMD_UNLOCK
+        ;;
+    lock|ro)
+        CMD_LOCK
+        ;;
+    sync|sync-slots)
+        CMD_SYNC
+        ;;
+    help|-h|--help|"")
+        SHOW_HELP
+        ;;
+    *)
+        echo "Unknown command: $ACTION"
+        echo "Run 'overlay-ctl help' for available commands."
+        exit 1
+        ;;
+esac

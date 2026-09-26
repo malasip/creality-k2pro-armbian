@@ -1,0 +1,19 @@
+# Build outputs & generated firmware
+output/
+input/*
+!input/.gitkeep
+*.img
+*.dump
+build_tmp*
+.tmp/
+
+# Temporary files
+*.bin
+*.dtb
+*~
+*.swp
+.DS_Store
+
+# Ignore general .fex dumps, but track partition configuration templates
+*.fex
+!configs/*.fex
