@@ -279,7 +279,7 @@ fi
 DTB="${CUSTOM_DTB}"
 if [[ -z "${DTB}" ]]; then
     for candidate in \
-        "${INPUT_DIR}/sun8i-t113i.dtb" \
+        "${INPUT_DIR}/sun8i-creality-k2pro-t113i.dtb" \
         "${INPUT_DIR}/"*.dtb; do
         if [[ -f "${candidate}" ]]; then
             DTB="${candidate}"
@@ -300,14 +300,14 @@ if [[ -z "${ZIMAGE}" || ! -f "${ZIMAGE}" || -z "${DTB}" || ! -f "${DTB}" ]]; the
     dd if="${ARMBIAN_IMG}" of="${BOOT_PART_IMG}" bs=512 skip="${BOOT_START}" count="${BOOT_SECTORS}" status=none
     
     mkdir -p "${BUILD_TMP}/extracted_boot"
-    7z e -y "${BOOT_PART_IMG}" -o"${BUILD_TMP}/extracted_boot" zImage dtb/sun8i-t113i.dtb sun8i-t113i.dtb >/dev/null 2>&1 || true
+    7z e -y "${BOOT_PART_IMG}" -o"${BUILD_TMP}/extracted_boot" zImage dtb/sun8i-creality-k2pro-t113i.dtb sun8i-creality-k2pro-t113i.dtb >/dev/null 2>&1 || true
 
     if [[ -z "${ZIMAGE}" && -f "${BUILD_TMP}/extracted_boot/zImage" ]]; then
         ZIMAGE="${BUILD_TMP}/extracted_boot/zImage"
     fi
 
-    if [[ -z "${DTB}" && -f "${BUILD_TMP}/extracted_boot/sun8i-t113i.dtb" ]]; then
-        DTB="${BUILD_TMP}/extracted_boot/sun8i-t113i.dtb"
+    if [[ -z "${DTB}" && -f "${BUILD_TMP}/extracted_boot/sun8i-creality-k2pro-t113i.dtb" ]]; then
+        DTB="${BUILD_TMP}/extracted_boot/sun8i-creality-k2pro-t113i.dtb"
     fi
 fi
 
