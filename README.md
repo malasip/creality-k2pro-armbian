@@ -88,7 +88,7 @@ Place the following files in the `input/` directory:
 3. **Armbian Base OS Image**:
    * Build using the [Custom Armbian build repository with K2 Pro support](https://github.com/malasip/build/tree/creality-k2pro-t113i):
      ```bash
-     ./compile.sh build BOARD=k2prot113 BRANCH=current BUILD_MINIMAL=yes BUILD_OPT=image RELEASE=bookworm
+     ./compile.sh build BOARD=creality-k2pro-t113i BRANCH=current BUILD_MINIMAL=yes BUILD_OPT=image RELEASE=bookworm
      ```
 
 ---
