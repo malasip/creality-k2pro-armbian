@@ -4,8 +4,6 @@ Firmware packer that creates flashable PhoenixSuit / OpenIXSuit A/B images for t
 
 ---
 
-## 🌟 The packer generates A/B firmware layout similar to Creality's stock firmware
-
 * **A/B Boot and RootFS partitions**:
   * Slot A: `bootA` (`mmcblk0p5`, 32 MB) + `rootfsA` (`mmcblk0p6`, 3.5 GB)
   * Slot B: `bootB` (`mmcblk0p8`, 32 MB) + `rootfsB` (`mmcblk0p7`, 3.5 GB)
@@ -23,8 +21,8 @@ Firmware packer that creates flashable PhoenixSuit / OpenIXSuit A/B images for t
   * Instant root shell access via `adb shell` without needing a USB-to-UART serial cable.
 * **Mainline Linux Kernel Support**:
   * Currently tested with 6.18
-* **No precompiled blobs**:
-  * Zero proprietary vendor blobs in this repository. All bootloaders (`boot0`, `fes1`, and genuine K2 Pro `u-boot`) are extracted on-the-fly from official Creality firmware and OTA packages during the build.
+* **No precompiled Creality blobs**:
+  * All bootloaders (`boot0`, `fes1`, and genuine K2 Pro `u-boot`) are extracted on-the-fly from official Creality firmware and OTA packages during the build.
 
 ---
 
@@ -113,7 +111,7 @@ The script will automatically:
 3. Put the board into **FEL mode** (hold the FEL/recovery button and press the onboard reset button).
 4. Flash using **OpenIXSuit** or **PhoenixSuit**:
    ```bash
-   # Select output/k2pro_debian_ab.img and choose "Format" or "Partition Upgrade".
+   # Select output/k2pro_debian_ab.img and choose "Allwinner IMG Flash option".
    ```
 
 ---
