@@ -15,7 +15,7 @@ mount -t tmpfs tmpfs /tmp 2>/dev/null || true
 modprobe overlay 2>/dev/null || true
 modprobe gpio_backlight 2>/dev/null || true
 
-# 2. Locate Persistent Data Partition
+# 2. Locate Partitions
 DATA_DEV=""
 for cand in /dev/mmcblk0p14 /dev/by-name/UDISK /dev/by-name/data; do
     if [ -b "$cand" ]; then
@@ -23,6 +23,73 @@ for cand in /dev/mmcblk0p14 /dev/by-name/UDISK /dev/by-name/data; do
         break
     fi
 done
+
+ROOT_DEV=""
+STANDBY_DEV=""
+CMDLINE=$(cat /proc/cmdline 2>/dev/null)
+case "$CMDLINE" in
+    *root=/dev/mmcblk0p7*|*rootfsB*)
+        ROOT_DEV="/dev/mmcblk0p7"
+        STANDBY_DEV="/dev/mmcblk0p6"
+        ;;
+    *root=/dev/mmcblk0p6*|*rootfsA*)
+        ROOT_DEV="/dev/mmcblk0p6"
+        STANDBY_DEV="/dev/mmcblk0p7"
+        ;;
+    *)
+        ROOT_DEV=$(sed -n 's/.*root=\([^ ]*\).*/\1/p' /proc/cmdline 2>/dev/null)
+        [ -z "$ROOT_DEV" ] && ROOT_DEV=$(findmnt -n -o SOURCE / 2>/dev/null || awk '$2 == "/" {print $1}' /proc/mounts 2>/dev/null)
+        ;;
+esac
+
+EXPAND_FS_IF_NEEDED() {
+    local dev="$1"
+    [ -b "$dev" ] || return 0
+
+    # Determine partition size in bytes
+    local dev_bytes
+    dev_bytes=$(blockdev --getsize64 "$dev" 2>/dev/null || true)
+    if [ -z "$dev_bytes" ] || [ "$dev_bytes" -le 0 ]; then
+        local dev_sectors
+        dev_sectors=$(cat "/sys/class/block/$(basename "$dev")/size" 2>/dev/null || true)
+        [ -n "$dev_sectors" ] && [ "$dev_sectors" -gt 0 ] && dev_bytes=$((dev_sectors * 512))
+    fi
+    [ -n "$dev_bytes" ] && [ "$dev_bytes" -gt 0 ] || return 0
+
+    # Determine filesystem size in bytes
+    local fs_bytes=0
+    if [ "$dev" = "$ROOT_DEV" ] || findmnt -n -o SOURCE / 2>/dev/null | grep -q "$dev"; then
+        local blocks bsize
+        blocks=$(stat -f -c "%b" / 2>/dev/null || true)
+        bsize=$(stat -f -c "%S" / 2>/dev/null || true)
+        if [ -n "$blocks" ] && [ -n "$bsize" ] && [ "$blocks" -gt 0 ]; then
+            fs_bytes=$((blocks * bsize))
+        fi
+    fi
+
+    # Fallback to tune2fs if unmounted or stat unavailable
+    if [ "$fs_bytes" -le 0 ]; then
+        local bcount bsize
+        bcount=$(tune2fs -l "$dev" 2>/dev/null | awk -F: '/Block count:/ {gsub(/ /, "", $2); print $2}')
+        bsize=$(tune2fs -l "$dev" 2>/dev/null | awk -F: '/Block size:/ {gsub(/ /, "", $2); print $2}')
+        if [ -n "$bcount" ] && [ -n "$bsize" ] && [ "$bcount" -gt 0 ]; then
+            fs_bytes=$((bcount * bsize))
+        fi
+    fi
+
+    # If filesystem is at least 64MB smaller than partition, expand it
+    if [ "$fs_bytes" -gt 0 ] && [ "$fs_bytes" -lt $((dev_bytes - 67108864)) ]; then
+        echo "Filesystem on ${dev} ($((fs_bytes / 1048576)) MB) is smaller than partition ($((dev_bytes / 1048576)) MB)."
+        echo "Expanding filesystem to fill partition..."
+        if command -v growpart >/dev/null 2>&1; then
+            local disk part_num
+            disk=$(echo "$dev" | sed -E 's/p?[0-9]+$//')
+            part_num=$(echo "$dev" | grep -o '[0-9]*$')
+            [ -b "$disk" ] && [ -n "$part_num" ] && growpart "$disk" "$part_num" 2>/dev/null || true
+        fi
+        resize2fs "$dev" 2>/dev/null || true
+    fi
+}
 
 if [ -n "$DATA_DEV" ]; then
     # Auto-format /data partition if unformatted on first boot
@@ -48,8 +115,20 @@ if [ -f /data/.maintenance_mode ]; then
 fi
 
 # First boot / First run detection:
-# If .not_logged_in_yet exists, boot direct RW so root password and user account persist to disk
-if [ -f /root/.not_logged_in_yet ] || [ ! -f /data/.data_initialized ]; then
+# Check if user account first-run setup is pending on the root partition
+FIRST_RUN=0
+if [ -f /root/.not_logged_in_yet ]; then
+    FIRST_RUN=1
+elif [ ! -f /etc/.firstrun_done ]; then
+    HAS_USER=$(awk -F: '$3 >= 1000 && $3 < 60000 {print $1}' /etc/passwd 2>/dev/null || true)
+    if [ -z "$HAS_USER" ]; then
+        FIRST_RUN=1
+    else
+        touch /etc/.firstrun_done 2>/dev/null || true
+    fi
+fi
+
+if [ "$FIRST_RUN" -eq 1 ]; then
     echo ""
     echo "======================================================="
     echo " [K2 Pro] FIRST RUN SETUP DETECTED (Direct RW Mode)    "
@@ -85,6 +164,10 @@ if [ "$MAINTENANCE" -eq 1 ]; then
     echo "======================================================="
     echo ""
     mount -o remount,rw / 2>/dev/null || true
+
+    # Expand filesystem if smaller than underlying partition
+    [ -n "$ROOT_DEV" ] && EXPAND_FS_IF_NEEDED "$ROOT_DEV"
+    [ -n "$STANDBY_DEV" ] && EXPAND_FS_IF_NEEDED "$STANDBY_DEV"
 
     # Ensure adb_shell symlink exists (/bin/adb_shell -> /usr/local/bin/adb_shell)
     if [ ! -L /bin/adb_shell ] || [ ! -e /bin/adb_shell ]; then
@@ -123,18 +206,28 @@ echo ""
 # Ensure physical mount points exist before remounting ro
 mkdir -p /overlay_tmpfs /new_root /rom /data 2>/dev/null || true
 
+# Expand filesystem if smaller than underlying partition before locking read-only
+if [ -n "$ROOT_DEV" ]; then
+    mount -o remount,rw / 2>/dev/null || true
+    EXPAND_FS_IF_NEEDED "$ROOT_DEV"
+    [ -n "$STANDBY_DEV" ] && EXPAND_FS_IF_NEEDED "$STANDBY_DEV"
+fi
+
 # Sync initial user accounts and credentials to Slot B if first-run finished on Slot A
-if [ -b /dev/mmcblk0p7 ] && [ ! -f /data/.slotb_synced ] && [ ! -f /root/.not_logged_in_yet ]; then
-    echo "Syncing initial user accounts and credentials to Slot B..."
+if [ -b /dev/mmcblk0p7 ] && [ "$FIRST_RUN" -eq 0 ]; then
     mkdir -p /mnt_slotb
     if mount /dev/mmcblk0p7 /mnt_slotb 2>/dev/null; then
-        cp -a /etc/passwd /etc/shadow /etc/group /etc/gshadow /mnt_slotb/etc/ 2>/dev/null || true
-        cp -a /etc/timezone /etc/localtime /etc/default/locale /mnt_slotb/etc/ 2>/dev/null || true
-        [ -e /mnt_slotb/usr/local/bin/adb_shell ] && ln -sf /usr/local/bin/adb_shell /mnt_slotb/bin/adb_shell 2>/dev/null || true
-        rm -f /mnt_slotb/root/.not_logged_in_yet 2>/dev/null || true
+        if [ -f /mnt_slotb/root/.not_logged_in_yet ] || [ ! -f /mnt_slotb/etc/.firstrun_done ]; then
+            echo "Syncing initial user accounts and credentials to Slot B..."
+            EXPAND_FS_IF_NEEDED /dev/mmcblk0p7
+            cp -a /etc/passwd /etc/shadow /etc/group /etc/gshadow /mnt_slotb/etc/ 2>/dev/null || true
+            cp -a /etc/timezone /etc/localtime /etc/default/locale /mnt_slotb/etc/ 2>/dev/null || true
+            [ -e /mnt_slotb/usr/local/bin/adb_shell ] && ln -sf /usr/local/bin/adb_shell /mnt_slotb/bin/adb_shell 2>/dev/null || true
+            rm -f /mnt_slotb/root/.not_logged_in_yet 2>/dev/null || true
+            touch /mnt_slotb/etc/.firstrun_done 2>/dev/null || true
+            echo "Slot B credentials synchronized successfully."
+        fi
         umount /mnt_slotb
-        touch /data/.slotb_synced
-        echo "Slot B credentials synchronized successfully."
     fi
     rmdir /mnt_slotb 2>/dev/null || true
 fi
