@@ -2,6 +2,13 @@
 # Configure USB OTG Gadget for ADB FunctionFS
 set -e
 
+# Ensure /bin/adb_shell symlink exists for adbd
+if [ ! -L /bin/adb_shell ] || [ ! -e /bin/adb_shell ]; then
+    if [ -e /usr/local/bin/adb_shell ]; then
+        ln -sf /usr/local/bin/adb_shell /bin/adb_shell 2>/dev/null || true
+    fi
+fi
+
 modprobe configfs 2>/dev/null || true
 modprobe libcomposite 2>/dev/null || true
 modprobe usb_f_fs 2>/dev/null || true

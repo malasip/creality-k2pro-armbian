@@ -86,6 +86,11 @@ if [ "$MAINTENANCE" -eq 1 ]; then
     echo ""
     mount -o remount,rw / 2>/dev/null || true
 
+    # Ensure adb_shell symlink exists (/bin/adb_shell -> /usr/local/bin/adb_shell)
+    if [ ! -L /bin/adb_shell ] || [ ! -e /bin/adb_shell ]; then
+        [ -e /usr/local/bin/adb_shell ] && ln -sf /usr/local/bin/adb_shell /bin/adb_shell 2>/dev/null || true
+    fi
+
     # Wire up persistent data bind mounts if /data is mounted
     if [ -n "$DATA_DEV" ]; then
         mkdir -p /data/home /data/system/NetworkManager /data/system/ssh
@@ -125,6 +130,7 @@ if [ -b /dev/mmcblk0p7 ] && [ ! -f /data/.slotb_synced ] && [ ! -f /root/.not_lo
     if mount /dev/mmcblk0p7 /mnt_slotb 2>/dev/null; then
         cp -a /etc/passwd /etc/shadow /etc/group /etc/gshadow /mnt_slotb/etc/ 2>/dev/null || true
         cp -a /etc/timezone /etc/localtime /etc/default/locale /mnt_slotb/etc/ 2>/dev/null || true
+        [ -e /mnt_slotb/usr/local/bin/adb_shell ] && ln -sf /usr/local/bin/adb_shell /mnt_slotb/bin/adb_shell 2>/dev/null || true
         rm -f /mnt_slotb/root/.not_logged_in_yet 2>/dev/null || true
         umount /mnt_slotb
         touch /data/.slotb_synced
@@ -169,6 +175,11 @@ if [ -n "$DATA_DEV" ]; then
             [ -f "$key" ] && cp -f "$key" /new_root/etc/ssh/ 2>/dev/null || true
         done
     fi
+fi
+
+# Ensure adb_shell symlink exists in new root (/bin/adb_shell -> /usr/local/bin/adb_shell)
+if [ ! -L /new_root/bin/adb_shell ] || [ ! -e /new_root/bin/adb_shell ]; then
+    [ -e /new_root/usr/local/bin/adb_shell ] && ln -sf /usr/local/bin/adb_shell /new_root/bin/adb_shell 2>/dev/null || true
 fi
 
 # Move API filesystems into the new root

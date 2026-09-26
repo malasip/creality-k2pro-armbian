@@ -411,11 +411,14 @@ if [[ -f "${OVERLAY_DIR}/usr/local/bin/adbd" ]]; then
     debugfs -w -R "sif usr/local/bin/adbd uid 0" "${ROOTFS_FEX}" >/dev/null 2>&1 || true
     debugfs -w -R "sif usr/local/bin/adbd gid 0" "${ROOTFS_FEX}" >/dev/null 2>&1 || true
 
-    debugfs -w -R "rm bin/adb_shell" "${ROOTFS_FEX}" >/dev/null 2>&1 || true
-    debugfs -w -R "write ${OVERLAY_DIR}/usr/local/bin/adb_shell bin/adb_shell" "${ROOTFS_FEX}" >/dev/null 2>&1 || true
-    debugfs -w -R "sif bin/adb_shell mode 0100755" "${ROOTFS_FEX}" >/dev/null 2>&1 || true
-    debugfs -w -R "sif bin/adb_shell uid 0" "${ROOTFS_FEX}" >/dev/null 2>&1 || true
-    debugfs -w -R "sif bin/adb_shell gid 0" "${ROOTFS_FEX}" >/dev/null 2>&1 || true
+    debugfs -w -R "rm usr/local/bin/adb_shell" "${ROOTFS_FEX}" >/dev/null 2>&1 || true
+    debugfs -w -R "write ${OVERLAY_DIR}/usr/local/bin/adb_shell usr/local/bin/adb_shell" "${ROOTFS_FEX}" >/dev/null 2>&1 || true
+    debugfs -w -R "sif usr/local/bin/adb_shell mode 0100755" "${ROOTFS_FEX}" >/dev/null 2>&1 || true
+    debugfs -w -R "sif usr/local/bin/adb_shell uid 0" "${ROOTFS_FEX}" >/dev/null 2>&1 || true
+    debugfs -w -R "sif usr/local/bin/adb_shell gid 0" "${ROOTFS_FEX}" >/dev/null 2>&1 || true
+
+    debugfs -w -R "rm usr/bin/adb_shell" "${ROOTFS_FEX}" >/dev/null 2>&1 || true
+    debugfs -w -R "symlink usr/bin/adb_shell /usr/local/bin/adb_shell" "${ROOTFS_FEX}" >/dev/null 2>&1 || true
 
     debugfs -w -R "rm usr/local/bin/k2-setup-adb.sh" "${ROOTFS_FEX}" >/dev/null 2>&1 || true
     debugfs -w -R "write ${OVERLAY_DIR}/usr/local/bin/k2-setup-adb.sh usr/local/bin/k2-setup-adb.sh" "${ROOTFS_FEX}" >/dev/null 2>&1 || true
